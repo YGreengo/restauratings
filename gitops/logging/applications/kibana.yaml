@@ -1,0 +1,63 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: kibana
+  namespace: argocd
+spec:
+  project: default
+  sources:
+  - chart: kibana
+    repoURL: https://charts.bitnami.com/bitnami
+    targetRevision: 11.2.20
+    helm:
+      releaseName: kibana
+      values: |
+        image:
+          tag: "8.13.4" 
+
+        elasticsearch:
+          hosts:
+            - "elasticsearch"
+          port: 9200
+        
+        replicaCount: 1
+        
+        service:
+          type: ClusterIP
+          ports:
+            http: 5601
+            
+        resources:
+          requests:
+            cpu: 250m
+            memory: 1Gi
+          limits:
+            cpu: 500m
+            memory: 2Gi
+            
+        persistence:
+          enabled: true
+          storageClass: "gp2"
+          size: 10Gi
+          
+        configuration:
+          server.shutdownTimeout: "5s"
+          elasticsearch.requestTimeout: 30000
+          xpack.security.enabled: false
+
+        extraEnvVars:
+          - name: NODE_OPTIONS
+            value: "--max-old-space-size=1536" 
+          - name: KIBANA_EXTRA_CONF
+            value: "node.options: --max-old-space-size=1536"
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: logging
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true

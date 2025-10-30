@@ -1,0 +1,50 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: elasticsearch
+  namespace: argocd
+spec:
+  project: default
+  sources:
+  - chart: elasticsearch
+    repoURL: https://charts.bitnami.com/bitnami
+    targetRevision: 21.1.0
+    helm:
+      releaseName: elasticsearch
+      values: |
+        # ONLY master node - everything else disabled
+        master:
+          replicaCount: 1
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: 500m
+              memory: 1024Mi
+
+        # Disable ALL other node types
+        data:
+          replicaCount: 1
+        coordinating:
+          replicaCount: 0
+        ingest:
+          enabled: false
+
+        persistence:
+          enabled: false
+
+        security:
+          enabled: false
+
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: logging
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true

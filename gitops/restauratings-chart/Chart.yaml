@@ -1,0 +1,17 @@
+apiVersion: v2
+name: restauratings
+description: A Helm chart for Restauratings application
+type: application
+version: 0.1.0
+appVersion: "1.0.0"
+keywords:
+  - restauratings
+  - nodejs
+  - mongodb
+home: git@gitlab.com:greengo-jenkins/restauratings-gitops.git
+sources:
+  - git@gitlab.com:greengo-jenkins/restauratings-gitops.git
+maintainers:
+  - name: Yarden Green
+    email: yarden.green@example.com
+dependencies: []

@@ -1,0 +1,117 @@
+replicaCount: 1
+
+image:
+  repository: nginx  
+  pullPolicy: IfNotPresent
+  tag: "latest"
+
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 5000
+
+ingress:
+  enabled: true
+  className: "nginx"
+  annotations:
+    # Cert-manager annotation to automatically create certificates
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"  
+    # Force redirect HTTP to HTTPS
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    # Use HTTP/2
+    nginx.ingress.kubernetes.io/http2-push-preload: "true"
+  hosts:
+    - host: restauratings.ddns.net
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: restauratings-tls
+      hosts:
+        - restauratings.ddns.net
+
+resources:
+  limits:
+    cpu: 100m
+    memory: 128Mi
+  requests:
+    cpu: 50m
+    memory: 64Mi
+
+autoscaling:
+  enabled: false  
+
+# Generic app config
+app:
+  name: myapp
+  port: 5000
+  env: development
+
+# Placeholder MongoDB config
+mongodb:
+  auth:
+    enabled: true
+    existingSecret: sealed-restauratings-mongo-creds
+    database: restauratings
+
+# Health checks
+healthcheck:
+  enabled: true
+  livenessProbe:
+    httpGet:
+      path: /health
+      port: http
+    initialDelaySeconds: 30
+    periodSeconds: 30
+
+# Generic env vars (fallback values when sealed secrets are disabled)
+env:
+  FLASK_ENV: "development"
+  FLASK_APP: "app.py"
+  SECRET_KEY: "dev-key"
+  GOOGLE_MAPS_API_KEY: "dev-key"
+
+# SSM Configuration 
+ssm:
+  enabled: false  
+  region: "ap-south-1"
+
+# Sealed Secrets Configuration
+sealedSecrets:
+  enabled: false  
+  # These encrypted values will be overridden in production umbrella chart
+  mongoCredentials:
+    encryptedData:
+      mongodb-username: ""  
+      mongodb-password: ""  
+  appSecrets:
+    encryptedData:
+      GOOGLE_MAPS_API_KEY: ""    
+      FLASK_SECRET_KEY: ""       
+      MONGODB_URI: ""            
+      FLASK_ENV: ""              
+      MONGO_DATABASE: ""         
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+clusterIssuer:
+  enabled: true
+  name: letsencrypt-prod
+  email: yarden12@gmail.com
+  server: https://acme-v02.api.letsencrypt.org/directory
+  ingressClass: nginx
+
+podAnnotations: {}
+podSecurityContext: {}
+securityContext: {}
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

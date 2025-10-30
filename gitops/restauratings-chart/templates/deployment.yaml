@@ -1,0 +1,91 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "restauratings.fullname" . }}
+  labels:
+    {{- include "restauratings.labels" . | nindent 4 }}
+spec:
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "restauratings.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "restauratings.selectorLabels" . | nindent 8 }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "restauratings.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+
+      containers:
+        - name: {{ .Chart.Name }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["python"]
+          args: ["app.py"]
+          ports:
+            - name: http
+              containerPort: {{ .Values.app.port | default 5000 }}
+              protocol: TCP
+          env:
+            - name: STATIC_URL_PATH
+              value: "/static"
+            - name: FLASK_ENV
+              value: "{{ .Values.env.FLASK_ENV | default "production" }}"
+            - name: FLASK_APP
+              value: "{{ .Values.env.FLASK_APP | default "app.py" }}"
+          envFrom:
+            {{- if .Values.sealedSecrets.enabled }}
+            - secretRef:
+                name: restauratings-app-secrets
+            {{- else }}
+            - secretRef:
+                name: restauratings-app-secrets
+            {{- end }}
+
+          {{- if .Values.healthcheck.enabled }}
+          livenessProbe:
+            httpGet:
+              path: {{ .Values.healthcheck.livenessProbe.httpGet.path | default "/health" }}
+              port: http
+            initialDelaySeconds: {{ .Values.healthcheck.livenessProbe.initialDelaySeconds | default 30 }}
+            periodSeconds: {{ .Values.healthcheck.livenessProbe.periodSeconds | default 30 }}
+            timeoutSeconds: {{ .Values.healthcheck.livenessProbe.timeoutSeconds | default 10 }}
+            failureThreshold: {{ .Values.healthcheck.livenessProbe.failureThreshold | default 3 }}
+          readinessProbe:
+            httpGet:
+              path: {{ .Values.healthcheck.livenessProbe.httpGet.path | default "/health" }}
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          {{- end }}
+
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

@@ -1,0 +1,135 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "restauratings.fullname" . }}-seed
+  labels:
+    {{- include "restauratings.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "1"
+    "helm.sh/hook-delete-policy": hook-succeeded
+spec:
+  template:
+    metadata:
+      labels:
+        {{- include "restauratings.selectorLabels" . | nindent 8 }}
+    spec:
+      restartPolicy: OnFailure
+      serviceAccountName: {{ include "restauratings.serviceAccountName" . }}
+
+      containers:
+      - name: seed-database
+        image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        command: ["/bin/sh"]
+        args:
+          - -c
+          - |
+            echo "Starting database seeding job..."
+            
+            # Use MONGODB_URI directly from environment variable (set from secret)
+            echo "Using MONGODB_URI from secret"
+
+            echo "Environment variables loaded:"
+            echo "MONGODB_URI: $(echo $MONGODB_URI | sed 's/:[^@]*@/:***@/')"  # Hide password
+            echo "FLASK_ENV: $FLASK_ENV"
+            echo "MONGO_DATABASE: $MONGO_DATABASE"
+
+            # Extract host and port for connectivity check
+            MONGO_HOST=$(echo $MONGODB_URI | sed -E 's|mongodb://[^@]*@([^:/]+):([0-9]+).*|\1|')
+            MONGO_PORT=$(echo $MONGODB_URI | sed -E 's|mongodb://[^@]*@([^:/]+):([0-9]+).*|\2|')
+
+            echo "Checking MongoDB connection to $MONGO_HOST:$MONGO_PORT"
+
+            # Wait for MongoDB to be reachable
+            for i in $(seq 1 60); do
+              if nc -z -w1 $MONGO_HOST $MONGO_PORT 2>/dev/null; then
+                echo "MongoDB is reachable!"
+                break
+              fi
+              echo "Waiting for MongoDB... ($i/60)"
+              sleep 3
+            done
+
+            echo "Waiting additional 10 seconds for MongoDB to be ready..."
+            sleep 10
+
+            echo "Testing MongoDB authentication..."
+            # Test connection with mongo client if available
+            if command -v mongosh >/dev/null 2>&1; then
+              echo "Testing connection with mongosh..."
+              mongosh "$MONGODB_URI" --eval "db.runCommand({ping: 1})" || echo "mongosh test failed, continuing with Python script..."
+            elif command -v mongo >/dev/null 2>&1; then
+              echo "Testing connection with mongo..."
+              mongo "$MONGODB_URI" --eval "db.runCommand({ping: 1})" || echo "mongo test failed, continuing with Python script..."
+            fi
+
+            echo "Starting seed script..."
+            cd /app
+            python3 seed_data.py
+            status=$?
+
+            if [ $status -ne 0 ]; then
+              echo "Seed script failed with exit code $status"
+              exit $status
+            fi
+
+            echo "Database seeding job completed successfully!"
+
+        env:
+          {{- if .Values.sealedSecrets.enabled }}
+          - name: MONGODB_URI
+            valueFrom:
+              secretKeyRef:
+                name: restauratings-app-secrets
+                key: MONGODB_URI
+          - name: FLASK_ENV
+            valueFrom:
+              secretKeyRef:
+                name: restauratings-app-secrets
+                key: FLASK_ENV
+          - name: MONGO_DATABASE
+            valueFrom:
+              secretKeyRef:
+                name: restauratings-app-secrets
+                key: MONGO_DATABASE
+          - name: FLASK_SECRET_KEY
+            valueFrom:
+              secretKeyRef:
+                name: restauratings-app-secrets
+                key: FLASK_SECRET_KEY
+          - name: GOOGLE_MAPS_API_KEY
+            valueFrom:
+              secretKeyRef:
+                name: restauratings-app-secrets
+                key: GOOGLE_MAPS_API_KEY
+          {{- else }}
+          - name: MONGODB_URI
+            value: "mongodb://admin:yarden@restauratings-umbrella-mongodb-headless.{{ .Release.Namespace }}.svc.cluster.local:27017/restauratings?authSource=admin"
+          - name: FLASK_ENV
+            value: "{{ .Values.env.FLASK_ENV | default "production" }}"
+          - name: MONGO_DATABASE
+            value: "restauratings"
+          {{- end }}
+
+        volumeMounts:
+          - name: run-secrets
+            mountPath: /var/run/secrets
+          - name: run-tmp
+            mountPath: /run
+          {{- if .Values.sealedSecrets.enabled }}
+          - name: mongodb-credentials
+            mountPath: /run/secrets
+            readOnly: true
+          {{- end }}
+
+      volumes:
+        - name: run-secrets
+          emptyDir: {}
+        - name: run-tmp
+          emptyDir: {}
+        {{- if .Values.sealedSecrets.enabled }}
+        - name: mongodb-credentials
+          secret:
+            secretName: restauratings-mongo-creds
+        {{- end }}

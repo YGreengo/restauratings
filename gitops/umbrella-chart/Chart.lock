@@ -1,0 +1,9 @@
+dependencies:
+- name: restauratings
+  repository: file://../restauratings-chart
+  version: 0.1.0
+- name: mongodb
+  repository: https://charts.bitnami.com/bitnami
+  version: 16.5.29
+digest: sha256:6230e5e0977660111de0de312d0e38d8e3c02660027db5d03e9283084b2e390a
+generated: "2025-07-28T19:31:11.793268053+03:00"

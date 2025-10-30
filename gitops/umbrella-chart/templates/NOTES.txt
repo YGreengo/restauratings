@@ -1,0 +1,56 @@
+Restauratings Umbrella Chart has been successfully deployed!
+
+## Deployment Summary
+
+{{- if .Values.restauratings.enabled }}
+Restauratings Application: ENABLED
+   - Replicas: {{ .Values.restauratings.replicaCount | default 2 }}
+   - Image: {{ .Values.restauratings.image.repository }}:{{ .Values.restauratings.image.tag }}
+   {{- if .Values.restauratings.autoscaling.enabled }}
+   - Autoscaling: {{ .Values.restauratings.autoscaling.minReplicas }}-{{ .Values.restauratings.autoscaling.maxReplicas }} replicas
+   {{- end }}
+{{- else }}
+Restauratings Application: DISABLED
+{{- end }}
+
+{{- if .Values.mongodb.enabled }}
+MongoDB Database: ENABLED
+   - Type: {{ .Values.mongodb.architecture }}
+   - Database: {{ .Values.mongodb.auth.database }}
+   - Persistence: {{ .Values.mongodb.persistence.enabled }}
+   {{- if .Values.mongodb.persistence.enabled }}
+   - Storage: {{ .Values.mongodb.persistence.size }}
+   {{- end }}
+{{- else }}
+MongoDB Database: DISABLED
+{{- end }}
+
+## Access Information
+
+{{- if and .Values.restauratings.enabled .Values.restauratings.ingress.enabled }}
+{{- range .Values.restauratings.ingress.hosts }}
+Application URL: http://{{ .host }}
+{{- end }}
+{{- else }}
+To access the application, run:
+  kubectl port-forward svc/{{ .Release.Name }}-restauratings 8080:80 -n {{ .Release.Namespace }}
+  
+Then visit: http://localhost:8080
+{{- end }}
+
+## Useful Commands
+
+# Check application status
+kubectl get pods -n {{ .Release.Namespace }}
+
+{{- if .Values.restauratings.enabled }}
+# View application logs
+kubectl logs -f deployment/{{ .Release.Name }}-restauratings -n {{ .Release.Namespace }}
+{{- end }}
+
+{{- if .Values.mongodb.enabled }}
+# Connect to MongoDB
+kubectl exec -it svc/{{ .Values.mongodb.fullnameOverride }} -n {{ .Release.Namespace }} -- mongo {{ .Values.mongodb.auth.database }} -u {{ .Values.mongodb.auth.username }} -p
+{{- end }}
+
+Happy coding! 

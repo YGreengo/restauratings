@@ -1,0 +1,12 @@
+apiVersion: v2
+name: umbrella
+description: Umbrella chart for all applications
+version: 0.1.0
+
+dependencies:
+  - name: restauratings
+    version: "0.1.0"
+    repository: "file://../restauratings-chart"
+  - name: mongodb
+    version: "16.5.29"
+    repository: "https://charts.bitnami.com/bitnami"

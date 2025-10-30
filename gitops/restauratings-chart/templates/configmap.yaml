@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "restauratings.fullname" . }}-config
+  labels:
+    {{- include "restauratings.labels" . | nindent 4 }}
+data:
+  FLASK_ENV: {{ .Values.env.FLASK_ENV | quote }}
+  FLASK_APP: {{ .Values.env.FLASK_APP | quote }}
+  APP_NAME: {{ .Values.app.name | quote }}
+  LOG_DIR: "/tmp/logs"  

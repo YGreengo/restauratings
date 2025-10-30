@@ -1,0 +1,283 @@
+pipeline {
+    agent any
+
+    environment {
+        AWS_REGION             = 'ap-south-1'
+        ECR_REGISTRY           = '011782265792.dkr.ecr.ap-south-1.amazonaws.com'
+        ECR_REPO               = '011782265792.dkr.ecr.ap-south-1.amazonaws.com/yarden/restauratings'
+        APP_NAME               = 'restauratings'
+        COMPOSE_PROJECT_NAME   = "restauratings-test-${env.BUILD_NUMBER}"
+        SLACK_WEBHOOK          = 'https://hooks.slack.com/services/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'
+        EC2_PUBLIC_IP          = '13.126.1.90'
+    }
+
+    options {
+        buildDiscarder(logRotator(daysToKeepStr: '30', numToKeepStr: '10'))
+        timeout(time: 9, unit: 'MINUTES')
+        timestamps()
+    }
+
+    stages {
+        stage('Source') {
+            steps {
+                echo "Cloning - Branch: ${env.BRANCH_NAME}"
+                script {
+                    env.GIT_COMMIT_SHORT = sh(script: 'git rev-parse --short HEAD', returnStdout: true).trim()
+                    def commitMessage    = sh(script: 'git log -1 --pretty=%B', returnStdout: true).trim()
+                    env.HAS_MAJOR_TAG    = commitMessage.contains('#major') ? 'true' : 'false'
+                    env.HAS_MINOR_TAG    = commitMessage.contains('#minor') ? 'true' : 'false'
+
+                    def getParam = { name ->
+                        def value = sh(
+                            script: "aws ssm get-parameter --name '/restauratings/${name}' --with-decryption --query 'Parameter.Value' --output text --region ${AWS_REGION}",
+                            returnStdout: true
+                        ).trim()
+                        if (!value || value == 'None') {
+                            error("SSM Parameter '/restauratings/${name}' is empty or not found")
+                        }
+                        return value
+                    }
+
+                    // Retrieve parameters
+                    env.GOOGLE_MAPS_API_KEY = getParam('google-maps-api-key')
+                    env.FLASK_SECRET_KEY    = getParam('flask-secret-key')
+                    env.MONGO_URI           = getParam('mongodb-uri')
+                    env.MONGO_USERNAME      = getParam('mongo-username')
+                    env.MONGO_PASSWORD      = getParam('mongo-password')
+                    env.FLASK_ENV_VAR       = getParam('flask-env')
+                    env.MONGO_DATABASE      = getParam('mongo-database')
+
+                }
+
+                // Write .env
+                sh '''
+                    cat > .env <<EOF
+GOOGLE_MAPS_API_KEY=${GOOGLE_MAPS_API_KEY}
+SECRET_KEY=${FLASK_SECRET_KEY}
+FLASK_ENV=${FLASK_ENV_VAR}
+EOF
+
+                    case "${MONGO_URI}" in
+                      mongodb://*|mongodb+srv://*)
+                        FINAL_URI="${MONGO_URI}"
+                        ;;
+                      *)
+                        if [ -z "${MONGO_USERNAME}" ] || [ -z "${MONGO_PASSWORD}" ]; then
+                          echo "ERROR: Mongo credentials missing"
+                          exit 1
+                        fi
+                        FINAL_URI="mongodb://${MONGO_USERNAME}:${MONGO_PASSWORD}@db:27017/${MONGO_DATABASE}"
+                        ;;
+                    esac
+
+                    cat >> .env <<EOF
+MONGODB_URI=${FINAL_URI}
+MONGO_INITDB_ROOT_USERNAME=${MONGO_USERNAME}
+MONGO_INITDB_ROOT_PASSWORD=${MONGO_PASSWORD}
+MONGO_INITDB_DATABASE=${MONGO_DATABASE}
+REACT_APP_GOOGLE_MAPS_API_KEY=${GOOGLE_MAPS_API_KEY}
+EOF
+
+                    sed 's/=.*/=[MASKED]/' .env
+                '''
+
+                script {
+                    if (env.BRANCH_NAME == 'main') {
+                        withCredentials([usernamePassword(
+                            credentialsId: 'thumbnailer-1-personal-access-token',
+                            usernameVariable: 'GIT_USERNAME',
+                            passwordVariable: 'GIT_TOKEN'
+                        )]) {
+                            def versionOutput = sh(script: '''
+# Clear all local tags to avoid conflicts
+echo "Clearing local tags..."
+git tag -l | xargs -r git tag -d
+
+# Get the remote URL and set up authentication
+ORIGIN_URL=$(git config --get remote.origin.url)
+case "$ORIGIN_URL" in
+  git@gitlab.com:*)
+    PATH=${ORIGIN_URL#git@gitlab.com:}
+    REMOTE_URL="https://${GIT_USERNAME}:${GIT_TOKEN}@gitlab.com/${PATH}"
+    ;;
+  https://gitlab.com/*)
+    REMOTE_URL="https://${GIT_USERNAME}:${GIT_TOKEN}@${ORIGIN_URL#https://}"
+    ;;
+  *)
+    echo "Unknown remote URL: $ORIGIN_URL"
+    exit 1
+    ;;
+esac
+
+# Get the latest remote tag directly without fetching
+echo "Getting remote tags..."
+LATEST=$(git ls-remote --tags "$REMOTE_URL" | grep "refs/tags/restauratings-" | grep -v '\\^{}' | sed 's|.*/restauratings-||' | sort -V | tail -1)
+
+if [ -z "$LATEST" ]; then
+  echo "No existing tags found, starting with 1.0.0"
+  MAJOR=1; MINOR=0; PATCH=0
+else
+  echo "Latest remote tag: restauratings-$LATEST"
+  MAJOR=$(echo "$LATEST" | cut -d. -f1)
+  MINOR=$(echo "$LATEST" | cut -d. -f2)
+  PATCH=$(echo "$LATEST" | cut -d. -f3)
+fi
+
+if [ "${HAS_MAJOR_TAG}" = 'true' ]; then
+  echo "Major version bump requested"
+  MAJOR=$((MAJOR+1)); MINOR=0; PATCH=0
+elif [ "${HAS_MINOR_TAG}" = 'true' ]; then
+  echo "Minor version bump requested"
+  MINOR=$((MINOR+1)); PATCH=0
+else
+  echo "Patch version bump (default)"
+  PATCH=$((PATCH+1))
+fi
+
+NEW_VERSION="$MAJOR.$MINOR.$PATCH"
+echo "Next version will be: restauratings-$NEW_VERSION"
+echo "restauratings-$NEW_VERSION"
+''', returnStdout: true).trim()
+                            env.DOCKER_IMAGE_TAG = versionOutput.split('\n')[-1]
+                        }
+                        env.SANITIZED_BRANCH = 'main'
+                    } else {
+                        def sanitizedBranch = env.BRANCH_NAME.replaceAll('/', '-')
+                        env.DOCKER_IMAGE_TAG = "${sanitizedBranch}-${env.BUILD_NUMBER}"
+                        env.SANITIZED_BRANCH = sanitizedBranch
+                    }
+                    echo "Commit: ${env.GIT_COMMIT_SHORT}, Tag: ${env.DOCKER_IMAGE_TAG}"
+                }
+            }
+        }
+
+
+        stage('Build') {
+            steps {
+                echo "Building images"
+                sh "docker build -t restaurant-nginx:${env.DOCKER_IMAGE_TAG} -f nginx/Dockerfile nginx/"
+                sh "docker tag restaurant-nginx:${env.DOCKER_IMAGE_TAG} restaurant-nginx:latest"
+
+                sh "docker build --build-arg REACT_APP_GOOGLE_MAPS_API_KEY=${env.GOOGLE_MAPS_API_KEY} -t ${ECR_REPO}:${env.DOCKER_IMAGE_TAG} -f backend/Dockerfile ."
+                sh "docker tag ${ECR_REPO}:${env.DOCKER_IMAGE_TAG} ${ECR_REPO}:${env.SANITIZED_BRANCH}-latest"
+            }
+        }
+
+        stage('Test') {
+            steps {
+                echo "Spinning up stack for tests"
+                sh 'docker compose build && docker compose up -d'
+                sh 'sleep 10'   
+                echo "Running unit tests"
+                sh './run-unit-tests.sh'
+            }
+        }
+
+        stage('E2E') {
+            when { anyOf { branch 'main'; branch 'feature/*' } }
+            steps {
+                echo "Running E2E tests"
+                sh './run-e2e-tests.sh || echo "E2E failures (non-blocking)"'
+                echo "Teardown"
+                sh 'docker compose down --volumes --remove-orphans'
+            }
+        }
+
+        stage('Tag') {
+            when { branch 'main' }
+            steps {
+                echo "Creating and pushing Git tag ${DOCKER_IMAGE_TAG}"
+                withCredentials([usernamePassword(
+                    credentialsId: 'thumbnailer-1-personal-access-token',
+                    usernameVariable: 'GIT_USERNAME',
+                    passwordVariable: 'GIT_TOKEN'
+                )]) {
+                    sh '''
+                        git config user.name "Jenkins-CI"
+                        git config user.email "jenkins@restaurant-ci.com"
+
+                        git tag -a ${DOCKER_IMAGE_TAG} -m "Release ${DOCKER_IMAGE_TAG}"
+                        echo "Created local tag ${DOCKER_IMAGE_TAG}"
+
+                        ORIGIN_URL=$(git config --get remote.origin.url)
+                        case "$ORIGIN_URL" in
+                          git@gitlab.com:*)
+                            PATH=${ORIGIN_URL#git@gitlab.com:}
+                            PUSH_URL="https://gitlab.com/${PATH}"
+                            ;;
+                          https://gitlab.com/*)
+                            PUSH_URL="$ORIGIN_URL"
+                            ;;
+                          *)
+                            echo "Unknown remote URL: $ORIGIN_URL"
+                            exit 1
+                            ;;
+                        esac
+
+                        git push "https://${GIT_USERNAME}:${GIT_TOKEN}@${PUSH_URL#https://}" ${DOCKER_IMAGE_TAG}
+                        echo "Pushed tag ${DOCKER_IMAGE_TAG} - successfuly"
+                    '''
+                }
+            }
+        }
+
+        stage('Publish') {
+            when { branch 'main' }
+            steps {
+                echo "Pushing images to ECR"
+                sh '''
+                    aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin ${ECR_REGISTRY}
+                    docker push ${ECR_REPO}:${DOCKER_IMAGE_TAG}
+                    docker push ${ECR_REPO}:main-latest
+                '''
+            }
+        }
+
+        stage('Update GitOps Image Tag') {
+            when { branch 'main' }
+            steps {
+                echo "Updating image tag in GitOps repo to restauratings-${DOCKER_IMAGE_TAG}"
+
+                withCredentials([usernamePassword(
+                    credentialsId: 'restauratings-gitops',
+                    usernameVariable: 'GIT_USERNAME',
+                    passwordVariable: 'GIT_TOKEN'
+                )]) {
+                    sh '''
+                        echo "Cloning GitOps repo..."
+                        rm -rf restauratings-gitops
+                        git clone https://${GIT_USERNAME}:${GIT_TOKEN}@gitlab.com/greengo-jenkins/restauratings-gitops.git
+                        cd restauratings-gitops
+
+                        echo "Updating image tag in umbrella-chart/values.yaml..."
+                        sed -i "s|^\\(\\s*tag:\\s*\\).*|\\1\\\"${DOCKER_IMAGE_TAG}\\\"|" umbrella-chart/values.yaml
+
+                        git config user.name "Jenkins-CI"
+                        git config user.email "jenkins@restaurant-ci.com"
+                        git add umbrella-chart/values.yaml
+                        git commit -m "jenkins-Update image tag to restauratings-${DOCKER_IMAGE_TAG}"
+                        git push origin main
+                        echo "GitOps repo updated"
+                    '''
+                }
+            }
+        }
+
+
+        
+    }
+
+    post {
+        success {
+            echo "Build succeeded"
+            sh "curl -X POST -H 'Content-type: application/json' --data '{\"text\":\"Build ${env.JOB_NAME} #${env.BUILD_NUMBER} succeeded (tag: ${DOCKER_IMAGE_TAG})\"}' ${SLACK_WEBHOOK}"
+        }
+        failure {
+            echo "Build failed"
+            sh "curl -X POST -H 'Content-type: application/json' --data '{\"text\":\"Build ${env.JOB_NAME} #${env.BUILD_NUMBER} failed\"}' ${SLACK_WEBHOOK}"
+        }
+        always {
+            sh 'docker compose down --volumes --remove-orphans || true'
+        }
+    }
+}

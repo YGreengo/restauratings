@@ -1,0 +1,26 @@
+# --- Python backend ---
+# Virtual env
+venv/
+# Byte‑compiled / cache
+__pycache__/
+*.py[cod]
+
+# --- Node frontend ---
+# Dependencies
+frontend/node_modules/
+# Production build
+frontend/build/
+# Logs
+npm-debug.log*
+yarn-error.log*
+
+# --- Docker ---
+*.log
+
+# --- OS & IDE ---
+.DS_Store
+*.log
+.vscode/
+.idea/
+#environment files
+.env
